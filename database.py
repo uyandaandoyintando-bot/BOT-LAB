@@ -1,36 +1,76 @@
 from __future__ import annotations
 
 import os
-from contextlib import contextmanager
+
 from sqlalchemy import create_engine
-from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, sessionmaker
+
+
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
 
 class Base(DeclarativeBase):
     pass
 
 
-def database_url() -> str:
-    url = os.getenv("DATABASE_URL", "sqlite:///botlab_test.db")
+def _normalize_database_url(url: str) -> str:
+    """
+    Normalize database URLs supplied by Railway or local development.
+    """
     if url.startswith("postgres://"):
-        url = url.replace("postgres://", "postgresql+psycopg://", 1)
-    elif url.startswith("postgresql://"):
-        url = url.replace("postgresql://", "postgresql+psycopg://", 1)
+        return url.replace("postgres://", "postgresql://", 1)
+
     return url
 
 
-engine = create_engine(database_url(), pool_pre_ping=True)
-SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)
+if DATABASE_URL:
+    DATABASE_URL = _normalize_database_url(DATABASE_URL)
+
+    engine = create_engine(
+        DATABASE_URL,
+        pool_pre_ping=True,
+    )
+
+else:
+    # Local development fallback.
+    # Railway will use PostgreSQL through DATABASE_URL.
+    engine = create_engine(
+        "sqlite:///botlab_dev.db",
+        connect_args={"check_same_thread": False},
+    )
 
 
-@contextmanager
-def session_scope():
-    session = SessionLocal()
+SessionLocal = sessionmaker(
+    bind=engine,
+    autoflush=False,
+    autocommit=False,
+    expire_on_commit=False,
+)
+
+
+def get_db():
+    """
+    Get a database session.
+
+    Usage:
+
+        db = next(get_db())
+    """
+    db = SessionLocal()
+
     try:
-        yield session
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
+        yield db
     finally:
-        session.close()
+        db.close()
+
+
+def initialize_database():
+    """
+    Create database tables.
+
+    Importing models here ensures SQLAlchemy knows
+    about every table before create_all() runs.
+    """
+    from database import models  # noqa: F401
+
+    Base.metadata.create_all(bind=engine)
