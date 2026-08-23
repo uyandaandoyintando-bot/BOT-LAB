@@ -3,6 +3,7 @@ from __future__ import annotations
 from flask import Flask, jsonify
 
 from backend.config import Config
+from backend.routes.products import products_bp
 from database.database import initialize_database
 
 
@@ -11,13 +12,22 @@ def create_app() -> Flask:
     app.config.from_object(Config)
 
     # --------------------------------------------------------
-    # Database
+    # DATABASE
     # --------------------------------------------------------
 
     initialize_database()
 
     # --------------------------------------------------------
-    # Health
+    # API ROUTES
+    # --------------------------------------------------------
+
+    app.register_blueprint(
+        products_bp,
+        url_prefix="/api/products",
+    )
+
+    # --------------------------------------------------------
+    # HEALTH CHECK
     # --------------------------------------------------------
 
     @app.get("/health")
@@ -27,10 +37,10 @@ def create_app() -> Flask:
                 "status": "ok",
                 "service": "BOT-LAB",
             }
-        )
+        ), 200
 
     # --------------------------------------------------------
-    # Root
+    # ROOT
     # --------------------------------------------------------
 
     @app.get("/")
@@ -40,10 +50,37 @@ def create_app() -> Flask:
                 "name": "BOT-LAB API",
                 "status": "online",
             }
-        )
+        ), 200
+
+    # --------------------------------------------------------
+    # 404
+    # --------------------------------------------------------
+
+    @app.errorhandler(404)
+    def not_found(error):
+        return jsonify(
+            {
+                "error": "Endpoint not found",
+            }
+        ), 404
+
+    # --------------------------------------------------------
+    # 500
+    # --------------------------------------------------------
+
+    @app.errorhandler(500)
+    def server_error(error):
+        return jsonify(
+            {
+                "error": "Internal server error",
+            }
+        ), 500
 
     return app
 
+
+# Gunicorn uses:
+# backend.app:app
 
 app = create_app()
 
