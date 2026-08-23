@@ -1,16 +1,121 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
 
 
-@dataclass(frozen=True)
 class Config:
-    bot_api_key: str = os.getenv("BOT_API_KEY", "7Q6PtkhEl10HsK_2uzUXqT5ILCeeaF1i1Tivi4Wj66Vq_terYxsBukRae5QkPBkq")
-    admin_role_id: str = os.getenv("DISCORD_ADMIN_ROLE_ID", "1538564483796967504")
-    download_base_url: str = os.getenv("DOWNLOAD_BASE_URL", "")
-    download_root: str = os.getenv("DOWNLOAD_ROOT", "downloads")
-    paypal_mode: str = os.getenv("PAYPAL_MODE", "sandbox")
-    paypal_client_id: str = os.getenv("PAYPAL_CLIENT_ID", "BAAqJyVHupZtG2dVznlv_qzULKT21FelR_Ms2k1B_3E9tmKrGtqnWGcUCIAkEXq1nrQBj1Ax0b1Tb738pE")
-    paypal_client_secret: str = os.getenv("PAYPAL_CLIENT_SECRET", "EPQrfGt62VOHvnVepf7oa7nYF0GqxrEAKVrCqP4gMHb_WEo_-4N5cRWNj5kf1ct0pKHJMB4CC6TFFzLA")
-    paypal_webhook_id: str = os.getenv("PAYPAL_WEBHOOK_ID", "https://bot-lab-core.base44.app/functions/paypalWebhook")
+    # --------------------------------------------------------
+    # Application
+    # --------------------------------------------------------
+
+    SECRET_KEY = os.getenv(
+        "SECRET_KEY",
+        "dev-only-change-this",
+    )
+
+    # --------------------------------------------------------
+    # Database
+    # --------------------------------------------------------
+
+    DATABASE_URL = os.getenv(
+        "DATABASE_URL",
+        "",
+    )
+
+    # --------------------------------------------------------
+    # Bot authentication
+    # --------------------------------------------------------
+
+    BOT_API_KEY = os.getenv(
+        "BOT_API_KEY",
+        "",
+    )
+
+    # --------------------------------------------------------
+    # Discord
+    # --------------------------------------------------------
+
+    DISCORD_GUILD_ID = os.getenv(
+        "DISCORD_GUILD_ID",
+        "",
+    )
+
+    DISCORD_ADMIN_ROLE_ID = os.getenv(
+        "DISCORD_ADMIN_ROLE_ID",
+        "",
+    )
+
+    # --------------------------------------------------------
+    # PayPal
+    # --------------------------------------------------------
+
+    PAYPAL_CLIENT_ID = os.getenv(
+        "PAYPAL_CLIENT_ID",
+        "",
+    )
+
+    PAYPAL_CLIENT_SECRET = os.getenv(
+        "PAYPAL_CLIENT_SECRET",
+        "",
+    )
+
+    PAYPAL_MODE = os.getenv(
+        "PAYPAL_MODE",
+        "sandbox",
+    ).lower()
+
+    PAYPAL_WEBHOOK_ID = os.getenv(
+        "PAYPAL_WEBHOOK_ID",
+        "",
+    )
+
+    # --------------------------------------------------------
+    # Website / downloads
+    # --------------------------------------------------------
+
+    ALLOWED_ORIGINS = os.getenv(
+        "ALLOWED_ORIGINS",
+        "",
+    )
+
+    DOWNLOAD_BASE_URL = os.getenv(
+        "DOWNLOAD_BASE_URL",
+        "",
+    )
+
+    # --------------------------------------------------------
+    # Server
+    # --------------------------------------------------------
+
+    PORT = int(
+        os.getenv(
+            "PORT",
+            "8000",
+        )
+    )
+
+    @classmethod
+    def validate_production(cls):
+        """
+        Check required production settings.
+
+        This intentionally does not require PayPal or the
+        download URL during the first deployment.
+        """
+
+        required = {
+            "DATABASE_URL": cls.DATABASE_URL,
+            "BOT_API_KEY": cls.BOT_API_KEY,
+        }
+
+        missing = [
+            name
+            for name, value in required.items()
+            if not value
+        ]
+
+        if missing:
+            raise RuntimeError(
+                "Missing required environment variables: "
+                + ", ".join(missing)
+    )
