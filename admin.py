@@ -3,7 +3,7 @@ from __future__ import annotations
 from flask import Blueprint, jsonify, request
 
 from backend.auth import require_admin_key
-from backend.services.licenses import create_license
+from backend.services.license_service import create_license
 from database.database import SessionLocal
 from database.models import Product
 
@@ -25,7 +25,7 @@ def create_product():
         data.get("description", "")
     ).strip()
 
-    tier = str(
+    subscription_tier = str(
         data.get("subscription_tier", "")
     ).strip().lower()
 
@@ -37,7 +37,7 @@ def create_product():
             "error": "name is required"
         }), 400
 
-    if tier not in {
+    if subscription_tier not in {
         "basic",
         "advanced",
         "premium",
@@ -74,7 +74,7 @@ def create_product():
         product = Product(
             name=name,
             description=description or None,
-            subscription_tier=tier,
+            subscription_tier=subscription_tier,
             price_cents=price_cents,
             currency="USD",
             duration_days=duration_days,
@@ -96,12 +96,45 @@ def create_product():
                 ),
                 "price_cents": product.price_cents,
                 "currency": product.currency,
-                "duration_days": (
-                    product.duration_days
-                ),
+                "duration_days": product.duration_days,
                 "active": product.active,
             },
         }), 201
+
+
+# ============================================================
+# LIST PRODUCTS
+# ============================================================
+
+@admin_bp.get("/products")
+@require_admin_key
+def list_products():
+    with SessionLocal() as db:
+        products = (
+            db.query(Product)
+            .order_by(Product.id)
+            .all()
+        )
+
+        return jsonify({
+            "products": [
+                {
+                    "id": product.id,
+                    "name": product.name,
+                    "description": product.description,
+                    "subscription_tier": (
+                        product.subscription_tier
+                    ),
+                    "price_cents": product.price_cents,
+                    "currency": product.currency,
+                    "duration_days": (
+                        product.duration_days
+                    ),
+                    "active": product.active,
+                }
+                for product in products
+            ]
+        }), 200
 
 
 # ============================================================
@@ -114,9 +147,7 @@ def generate_license():
     data = request.get_json(silent=True) or {}
 
     try:
-        product_id = int(
-            data.get("product_id")
-        )
+        product_id = int(data.get("product_id"))
     except (TypeError, ValueError):
         return jsonify({
             "error": "product_id is required"
@@ -176,39 +207,3 @@ def generate_license():
                 license_record.max_activations
             ),
         }), 201
-
-
-# ============================================================
-# LIST PRODUCTS
-# ============================================================
-
-@admin_bp.get("/products")
-@require_admin_key
-def list_all_products():
-    with SessionLocal() as db:
-        products = (
-            db.query(Product)
-            .order_by(Product.id)
-            .all()
-        )
-
-        return jsonify({
-            "products": [
-                {
-                    "id": product.id,
-                    "name": product.name,
-                    "subscription_tier": (
-                        product.subscription_tier
-                    ),
-                    "price_cents": (
-                        product.price_cents
-                    ),
-                    "currency": product.currency,
-                    "duration_days": (
-                        product.duration_days
-                    ),
-                    "active": product.active,
-                }
-                for product in products
-            ]
-        }), 200
