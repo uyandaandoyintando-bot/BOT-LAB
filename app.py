@@ -4,6 +4,7 @@ from flask import Flask, jsonify
 
 from backend.config import Config
 from backend.routes.admin import admin_bp
+from backend.routes.downloads import downloads_bp
 from backend.routes.licenses import licenses_bp
 from backend.routes.paypal import paypal_bp
 from backend.routes.products import products_bp
@@ -14,7 +15,7 @@ def create_app() -> Flask:
     app = Flask(__name__)
 
     # --------------------------------------------------------
-    # Configuration
+    # Basic configuration
     # --------------------------------------------------------
 
     app.config["JSON_SORT_KEYS"] = False
@@ -30,8 +31,8 @@ def create_app() -> Flask:
     # --------------------------------------------------------
 
     app.register_blueprint(
-        admin_bp,
-        url_prefix="/api/admin",
+        products_bp,
+        url_prefix="/api/products",
     )
 
     app.register_blueprint(
@@ -40,63 +41,36 @@ def create_app() -> Flask:
     )
 
     app.register_blueprint(
+        admin_bp,
+        url_prefix="/api/admin",
+    )
+
+    app.register_blueprint(
         paypal_bp,
         url_prefix="/api/paypal",
     )
 
     app.register_blueprint(
-        products_bp,
-        url_prefix="/api/products",
+        downloads_bp,
+        url_prefix="/api/downloads",
     )
 
     # --------------------------------------------------------
     # Health check
     # --------------------------------------------------------
 
+    @app.get("/")
+    def index():
+        return jsonify({
+            "name": "BOT-LAB API",
+            "status": "online",
+        })
+
     @app.get("/health")
     def health():
         return jsonify({
             "status": "ok",
-            "service": "BOT-LAB",
-        }), 200
-
-    # --------------------------------------------------------
-    # API information
-    # --------------------------------------------------------
-
-    @app.get("/")
-    def index():
-        return jsonify({
-            "service": "BOT-LAB",
-            "status": "online",
-            "endpoints": {
-                "health": "/health",
-                "products": "/api/products",
-                "licenses": "/api/licenses",
-                "paypal": "/api/paypal",
-                "admin": "/api/admin",
-            },
-        }), 200
-
-    # --------------------------------------------------------
-    # 404 handler
-    # --------------------------------------------------------
-
-    @app.errorhandler(404)
-    def not_found(error):
-        return jsonify({
-            "error": "Not found",
-        }), 404
-
-    # --------------------------------------------------------
-    # General error handler
-    # --------------------------------------------------------
-
-    @app.errorhandler(500)
-    def internal_error(error):
-        return jsonify({
-            "error": "Internal server error",
-        }), 500
+        })
 
     return app
 
@@ -108,5 +82,4 @@ if __name__ == "__main__":
     app.run(
         host="0.0.0.0",
         port=Config.PORT,
-        debug=False,
-                      )
+    )
