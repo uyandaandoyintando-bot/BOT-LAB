@@ -1,23 +1,38 @@
+from __future__ import annotations
+
 import os
 
 
 class Config:
-    PORT = int(os.getenv("PORT", "8000"))
+    # --------------------------------------------------------
+    # Server
+    # --------------------------------------------------------
+
+    PORT = int(
+        os.getenv("PORT", "8000")
+    )
+
+    # --------------------------------------------------------
+    # Database
+    # --------------------------------------------------------
 
     DATABASE_URL = os.getenv(
         "DATABASE_URL",
         "sqlite:///botlab.db",
     )
 
+    # --------------------------------------------------------
+    # Admin
+    # --------------------------------------------------------
+
     ADMIN_API_KEY = os.getenv(
         "ADMIN_API_KEY",
         "",
     )
 
-    PAYPAL_MODE = os.getenv(
-        "PAYPAL_MODE",
-        "sandbox",
-    )
+    # --------------------------------------------------------
+    # PayPal
+    # --------------------------------------------------------
 
     PAYPAL_CLIENT_ID = os.getenv(
         "PAYPAL_CLIENT_ID",
@@ -29,7 +44,25 @@ class Config:
         "",
     )
 
-    PAYPAL_WEBHOOK_ID = os.getenv(
-        "PAYPAL_WEBHOOK_ID",
+    PAYPAL_ENVIRONMENT = os.getenv(
+        "PAYPAL_ENVIRONMENT",
+        "sandbox",
+    ).lower()
+
+    # --------------------------------------------------------
+    # Downloads
+    # --------------------------------------------------------
+
+    DOWNLOAD_BASE_URL = os.getenv(
+        "DOWNLOAD_BASE_URL",
+        "",
+    )
+
+    # --------------------------------------------------------
+    # CORS
+    # --------------------------------------------------------
+
+    ALLOWED_ORIGINS = os.getenv(
+        "ALLOWED_ORIGINS",
         "",
     )
