@@ -1,170 +1,156 @@
 from __future__ import annotations
 
-import hashlib
-import secrets
-from datetime import datetime, timedelta
+from flask import Blueprint, jsonify, request
 
-from database.models import License, Product
-
-
-VALID_STATUSES = {
-    "unused",
-    "active",
-    "expired",
-    "revoked",
-}
+from backend.services.license_service import (
+    activate_license,
+    can_activate_license,
+    verify_license_key,
+)
+from database.database import SessionLocal
+from database.models import License
 
 
-def hash_value(value: str) -> str:
-    return hashlib.sha256(
-        value.encode("utf-8")
-    ).hexdigest()
+licenses_bp = Blueprint("licenses", __name__)
 
 
-def generate_license_key() -> str:
-    """
-    Generate a license key.
+# ============================================================
+# REDEEM / ACTIVATE LICENSE
+# ============================================================
 
-    The full key is only returned when the license is created.
-    The database stores a hash instead of the raw key.
-    """
+@licenses_bp.post("/redeem")
+def redeem_license():
+    data = request.get_json(silent=True) or {}
 
-    parts = [
-        secrets.token_hex(4).upper(),
-        secrets.token_hex(4).upper(),
-        secrets.token_hex(4).upper(),
-        secrets.token_hex(4).upper(),
-    ]
+    license_key = str(
+        data.get("license_key", "")
+    ).strip()
 
-    return "BOTLAB-" + "-".join(parts)
+    if not license_key:
+        return jsonify({
+            "error": "license_key is required"
+        }), 400
 
-
-def create_license(
-    product: Product,
-    *,
-    order_id: int | None = None,
-    max_activations: int = 1,
-) -> tuple[str, License]:
-    """
-    Create a new license for a product.
-
-    Returns:
-        (plain_text_license_key, database_license)
-    """
-
-    plain_key = generate_license_key()
-
-    license_record = License(
-        license_key_hash=hash_value(plain_key),
-        license_key_last4=plain_key[-4:],
-        order_id=order_id,
-        product_id=product.id,
-        status="unused",
-        activation_count=0,
-        max_activations=max_activations,
-    )
-
-    if product.duration_days:
-        license_record.expires_at = (
-            datetime.utcnow()
-            + timedelta(days=product.duration_days)
+    with SessionLocal() as db:
+        licenses = (
+            db.query(License)
+            .all()
         )
 
-    return plain_key, license_record
+        license_record = None
 
+        for record in licenses:
+            if verify_license_key(
+                license_key,
+                record,
+            ):
+                license_record = record
+                break
 
-def find_license(
-    db,
-    plain_key: str,
-) -> License | None:
-    """
-    Find a license using its plain-text key.
-    """
+        if license_record is None:
+            return jsonify({
+                "error": "Invalid license key"
+            }), 404
 
-    key_hash = hash_value(plain_key)
-
-    license_record = (
-        db.query(License)
-        .filter(
-            License.license_key_hash == key_hash
+        allowed, reason = can_activate_license(
+            license_record
         )
-        .first()
-    )
 
-    return license_record
+        if not allowed:
+            return jsonify({
+                "error": reason
+            }), 400
+
+        activate_license(
+            license_record
+        )
+
+        db.commit()
+        db.refresh(license_record)
+
+        product = license_record.product
+
+        return jsonify({
+            "success": True,
+            "message": "License redeemed successfully",
+            "subscription_tier": (
+                product.subscription_tier
+            ),
+            "product": product.name,
+            "status": license_record.status,
+            "activation_count": (
+                license_record.activation_count
+            ),
+            "max_activations": (
+                license_record.max_activations
+            ),
+            "expires_at": (
+                license_record.expires_at.isoformat()
+                if license_record.expires_at
+                else None
+            ),
+        }), 200
 
 
-def validate_license(
-    license_record: License,
-) -> tuple[bool, str]:
-    """
-    Validate a license before redemption/activation.
-    """
+# ============================================================
+# CHECK LICENSE
+# ============================================================
 
-    if license_record.status == "revoked":
-        return False, "License has been revoked."
+@licenses_bp.post("/check")
+def check_license():
+    data = request.get_json(silent=True) or {}
 
-    if license_record.revoked_at is not None:
-        return False, "License has been revoked."
+    license_key = str(
+        data.get("license_key", "")
+    ).strip()
 
-    if (
-        license_record.expires_at is not None
-        and license_record.expires_at <= datetime.utcnow()
-    ):
-        license_record.status = "expired"
-        return False, "License has expired."
+    if not license_key:
+        return jsonify({
+            "error": "license_key is required"
+        }), 400
 
-    if (
-        license_record.activation_count
-        >= license_record.max_activations
-        and license_record.status != "active"
-    ):
-        return False, "Activation limit reached."
+    with SessionLocal() as db:
+        licenses = (
+            db.query(License)
+            .all()
+        )
 
-    return True, "License is valid."
+        license_record = None
 
+        for record in licenses:
+            if verify_license_key(
+                license_key,
+                record,
+            ):
+                license_record = record
+                break
 
-def redeem_license(
-    db,
-    license_record: License,
-    customer_id: int,
-    hwid: str | None = None,
-) -> tuple[bool, str]:
-    """
-    Redeem/activate a license for a customer.
-    """
+        if license_record is None:
+            return jsonify({
+                "error": "Invalid license key"
+            }), 404
 
-    valid, message = validate_license(
-        license_record
-    )
+        product = license_record.product
 
-    if not valid:
-        return False, message
-
-    if (
-        license_record.customer_id is not None
-        and license_record.customer_id != customer_id
-    ):
-        return False, "License belongs to another account."
-
-    if license_record.status == "active":
-        if (
-            hwid
-            and license_record.hwid_hash
-            and hash_value(hwid)
-            != license_record.hwid_hash
-        ):
-            return False, "License is already bound to another HWID."
-
-        return True, "License is already active."
-
-    license_record.customer_id = customer_id
-    license_record.status = "active"
-    license_record.activated_at = datetime.utcnow()
-
-    if hwid:
-        license_record.hwid_hash = hash_value(hwid)
-
-    license_record.activation_count += 1
-
-    return True, "License activated successfully."
+        return jsonify({
+            "valid": (
+                license_record.status
+                != "revoked"
+            ),
+            "subscription_tier": (
+                product.subscription_tier
+            ),
+            "product": product.name,
+            "status": license_record.status,
+            "activation_count": (
+                license_record.activation_count
+            ),
+            "max_activations": (
+                license_record.max_activations
+            ),
+            "expires_at": (
+                license_record.expires_at.isoformat()
+                if license_record.expires_at
+                else None
+            ),
+        }), 200
