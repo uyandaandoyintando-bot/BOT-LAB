@@ -8,8 +8,8 @@ from database.models import Customer, Order, Payment, Product
 
 def generate_public_order_id() -> str:
     return (
-        "BOTLAB-"
-        + secrets.token_hex(12).upper()
+        "BL-"
+        + secrets.token_hex(8).upper()
     )
 
 
@@ -19,7 +19,8 @@ def create_pending_order(
     product: Product,
 ) -> Order:
     """
-    Create a local pending order before contacting PayPal.
+    Create a local pending order using the
+    product price stored in the database.
     """
 
     order = Order(
@@ -41,20 +42,32 @@ def mark_order_paid(
     db,
     order: Order,
     paypal_order_id: str,
-    paypal_payment_id: str | None = None,
+    capture_id: str | None = None,
 ) -> Payment:
     """
-    Mark an order as paid and record the PayPal payment.
+    Mark an order as paid and create its payment record.
     """
 
+    if order.status == "paid":
+        existing_payment = (
+            db.query(Payment)
+            .filter(
+                Payment.order_id == order.id
+            )
+            .first()
+        )
+
+        if existing_payment is not None:
+            return existing_payment
+
     order.status = "paid"
-    order.paypal_order_id = paypal_order_id
     order.paid_at = datetime.utcnow()
+    order.paypal_order_id = paypal_order_id
 
     payment = Payment(
         order_id=order.id,
         provider="paypal",
-        provider_payment_id=paypal_payment_id,
+        provider_payment_id=capture_id,
         amount_cents=order.amount_cents,
         currency=order.currency,
         status="completed",
@@ -64,3 +77,22 @@ def mark_order_paid(
     db.flush()
 
     return payment
+
+
+def cancel_order(
+    db,
+    order: Order,
+) -> None:
+    """
+    Cancel an unpaid order.
+    """
+
+    if order.status == "paid":
+        raise ValueError(
+            "A paid order cannot be cancelled"
+        )
+
+    order.status = "cancelled"
+    order.cancelled_at = datetime.utcnow()
+
+    db.flush()
