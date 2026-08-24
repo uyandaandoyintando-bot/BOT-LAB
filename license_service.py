@@ -9,23 +9,23 @@ from database.models import License, Product
 
 def generate_license_key() -> str:
     """
-    Generate a license key that is safe to give to the customer.
-
-    Example:
-        BOTLAB-BASIC-A1B2-C3D4-E5F6-G7H8
+    Generate a license key that is safe to show to a customer.
+    The raw key is returned only at creation time.
     """
 
-    groups = [
-        secrets.token_hex(2).upper()
-        for _ in range(4)
+    parts = [
+        secrets.token_hex(4).upper(),
+        secrets.token_hex(4).upper(),
+        secrets.token_hex(4).upper(),
+        secrets.token_hex(4).upper(),
     ]
 
-    return "BOTLAB-" + "-".join(groups)
+    return "BL-" + "-".join(parts)
 
 
 def hash_license_key(license_key: str) -> str:
-    return hashlib.sha256(
-        license_key.strip().upper().encode("utf-8")
+    return hashlib.sha512(
+        license_key.strip().encode("utf-8")
     ).hexdigest()
 
 
@@ -37,41 +37,43 @@ def create_license(
     max_activations: int = 1,
 ) -> tuple[str, License]:
     """
-    Create a license for a product.
+    Create a license.
 
-    The plaintext license key is returned once to the caller.
-    Only its SHA-256 hash is stored in the database.
+    Returns:
+        (raw_license_key, License_record)
+
+    The raw key should only be shown to the customer once.
     """
 
-    if max_activations < 1:
-        raise ValueError(
-            "max_activations must be at least 1"
+    raw_key = generate_license_key()
+
+    key_hash = hash_license_key(
+        raw_key
+    )
+
+    duration_days = product.duration_days
+
+    expires_at = None
+
+    if duration_days is not None:
+        expires_at = (
+            datetime.utcnow()
+            + timedelta(days=duration_days)
         )
 
-    license_key = generate_license_key()
-
     license_record = License(
-        license_key_hash=hash_license_key(
-            license_key
-        ),
-        license_key_last4=license_key[-4:],
+        license_key_hash=key_hash,
+        license_key_last4=raw_key[-4:],
         order_id=order_id,
         customer_id=customer_id,
         product_id=product.id,
         status="unused",
         activation_count=0,
         max_activations=max_activations,
+        expires_at=expires_at,
     )
 
-    if product.duration_days:
-        license_record.expires_at = (
-            datetime.utcnow()
-            + timedelta(
-                days=product.duration_days
-            )
-        )
-
-    return license_key, license_record
+    return raw_key, license_record
 
 
 def verify_license_key(
@@ -79,30 +81,20 @@ def verify_license_key(
     license_record: License,
 ) -> bool:
     """
-    Check a supplied license key against the
-    stored hash.
+    Compare a supplied license key against
+    the stored SHA-512 hash.
     """
 
-    if not license_key:
+    if not license_key.strip():
         return False
 
     supplied_hash = hash_license_key(
         license_key
     )
 
-    return supplied_hash == (
-        license_record.license_key_hash
-    )
-
-
-def is_license_expired(
-    license_record: License,
-) -> bool:
-    if license_record.expires_at is None:
-        return False
-
-    return datetime.utcnow() >= (
-        license_record.expires_at
+    return secrets.compare_digest(
+        supplied_hash,
+        license_record.license_key_hash,
     )
 
 
@@ -110,14 +102,22 @@ def can_activate_license(
     license_record: License,
 ) -> tuple[bool, str]:
     """
-    Check whether a license is currently
-    eligible for activation.
+    Check whether the license can currently
+    be activated.
     """
 
     if license_record.status == "revoked":
         return False, "License has been revoked"
 
-    if is_license_expired(license_record):
+    if license_record.revoked_at is not None:
+        return False, "License has been revoked"
+
+    if (
+        license_record.expires_at is not None
+        and datetime.utcnow()
+        >= license_record.expires_at
+    ):
+        license_record.status = "expired"
         return False, "License has expired"
 
     if (
@@ -126,14 +126,14 @@ def can_activate_license(
     ):
         return False, "Activation limit reached"
 
-    return True, "License can be activated"
+    return True, ""
 
 
 def activate_license(
     license_record: License,
-) -> None:
+) -> License:
     """
-    Mark a license as activated.
+    Activate a valid license.
     """
 
     allowed, reason = can_activate_license(
@@ -151,10 +151,12 @@ def activate_license(
             datetime.utcnow()
         )
 
+    return license_record
+
 
 def revoke_license(
     license_record: License,
-) -> None:
+) -> License:
     """
     Revoke a license.
     """
@@ -162,4 +164,6 @@ def revoke_license(
     license_record.status = "revoked"
     license_record.revoked_at = (
         datetime.utcnow()
-  )
+    )
+
+    return license_record
