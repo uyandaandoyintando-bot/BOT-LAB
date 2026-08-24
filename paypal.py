@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime
-
 from flask import Blueprint, jsonify, request
-from sqlalchemy import select
 
-from backend.services.licenses import create_license
+from backend.services.license_service import create_license
 from backend.services.order_service import (
     create_pending_order,
     mark_order_paid,
@@ -23,11 +20,11 @@ paypal_bp = Blueprint("paypal", __name__)
 
 
 # ============================================================
-# CREATE PAYPAL CHECKOUT
+# CREATE PAYPAL ORDER
 # ============================================================
 
 @paypal_bp.post("/create-order")
-def create_order():
+async def create_order():
     data = request.get_json(silent=True) or {}
 
     try:
@@ -64,7 +61,7 @@ def create_order():
 
         if customer is None:
             customer = Customer(
-                discord_id=discord_id,
+                discord_id=discord_id
             )
             db.add(customer)
             db.flush()
@@ -76,16 +73,17 @@ def create_order():
         )
 
         try:
-            paypal_data = await_create_paypal_order(
-                order,
-                product,
+            paypal_data = await create_paypal_order(
+                amount_cents=order.amount_cents,
+                currency=order.currency,
+                public_order_id=order.public_id,
+                description=product.name,
             )
-        except Exception as exc:
+        except Exception:
             db.rollback()
 
             return jsonify({
-                "error": "Unable to create PayPal order",
-                "details": str(exc),
+                "error": "Unable to create PayPal order"
             }), 502
 
         paypal_order_id = paypal_data.get("id")
@@ -112,6 +110,7 @@ def create_order():
             "success": True,
             "order_id": order.public_id,
             "paypal_order_id": paypal_order_id,
+            "product": product.name,
             "subscription_tier": (
                 product.subscription_tier
             ),
@@ -121,24 +120,12 @@ def create_order():
         }), 201
 
 
-async def await_create_paypal_order(
-    order: Order,
-    product: Product,
-) -> dict:
-    return await create_paypal_order(
-        amount_cents=order.amount_cents,
-        currency=order.currency,
-        public_order_id=order.public_id,
-        description=product.name,
-    )
-
-
 # ============================================================
-# CAPTURE PAYPAL PAYMENT
+# CAPTURE PAYMENT
 # ============================================================
 
 @paypal_bp.post("/capture")
-async def capture():
+async def capture_payment():
     data = request.get_json(silent=True) or {}
 
     paypal_order_id = str(
@@ -162,11 +149,12 @@ async def capture():
 
         if order is None:
             return jsonify({
-                "error": "Local order not found"
+                "error": "Order not found"
             }), 404
 
+        # Prevent duplicate license generation.
         if order.status == "paid":
-            license_record = (
+            existing_license = (
                 db.query(License)
                 .filter(
                     License.order_id == order.id
@@ -176,11 +164,16 @@ async def capture():
 
             return jsonify({
                 "success": True,
-                "message": "Order already processed",
+                "already_processed": True,
                 "order_id": order.public_id,
-                "license_status": (
-                    license_record.status
-                    if license_record
+                "subscription_tier": (
+                    order.product.subscription_tier
+                    if order.product
+                    else None
+                ),
+                "license_last4": (
+                    existing_license.license_key_last4
+                    if existing_license
                     else None
                 ),
             }), 200
@@ -189,10 +182,9 @@ async def capture():
             paypal_data = await capture_paypal_order(
                 paypal_order_id
             )
-        except Exception as exc:
+        except Exception:
             return jsonify({
-                "error": "PayPal capture failed",
-                "details": str(exc),
+                "error": "PayPal capture failed"
             }), 502
 
         if paypal_data.get("status") != "COMPLETED":
@@ -203,11 +195,6 @@ async def capture():
                 ),
             }), 400
 
-        # ----------------------------------------------------
-        # Verify the captured amount/currency against our
-        # trusted local order.
-        # ----------------------------------------------------
-
         purchase_units = paypal_data.get(
             "purchase_units",
             [],
@@ -215,21 +202,32 @@ async def capture():
 
         if not purchase_units:
             return jsonify({
-                "error": "PayPal response has no purchase units"
+                "error": "Invalid PayPal response"
             }), 502
 
-        captured_amount = (
+        captures = (
             purchase_units[0]
             .get("payments", {})
-            .get("captures", [{}])[0]
-            .get("amount", {})
+            .get("captures", [])
         )
 
-        expected_value = (
+        if not captures:
+            return jsonify({
+                "error": "No PayPal capture found"
+            }), 502
+
+        capture = captures[0]
+
+        captured_amount = capture.get(
+            "amount",
+            {},
+        )
+
+        expected_amount = (
             f"{order.amount_cents / 100:.2f}"
         )
 
-        actual_value = captured_amount.get(
+        actual_amount = captured_amount.get(
             "value"
         )
 
@@ -237,7 +235,9 @@ async def capture():
             "currency_code"
         )
 
-        if actual_value != expected_value:
+        # Never trust PayPal success alone.
+        # Verify amount and currency against our DB.
+        if actual_amount != expected_amount:
             return jsonify({
                 "error": "Payment amount mismatch"
             }), 400
@@ -247,13 +247,6 @@ async def capture():
                 "error": "Payment currency mismatch"
             }), 400
 
-        capture_id = (
-            purchase_units[0]
-            .get("payments", {})
-            .get("captures", [{}])[0]
-            .get("id")
-        )
-
         product = db.get(
             Product,
             order.product_id,
@@ -261,28 +254,23 @@ async def capture():
 
         if product is None:
             return jsonify({
-                "error": "Product no longer exists"
+                "error": "Product not found"
             }), 500
 
-        payment = mark_order_paid(
+        capture_id = capture.get("id")
+
+        mark_order_paid(
             db,
             order,
             paypal_order_id,
             capture_id,
         )
 
-        # ----------------------------------------------------
-        # Generate the license only after successful payment.
-        # ----------------------------------------------------
-
         license_key, license_record = create_license(
             product,
             order_id=order.id,
+            customer_id=order.customer_id,
             max_activations=1,
-        )
-
-        license_record.customer_id = (
-            order.customer_id
         )
 
         db.add(license_record)
@@ -292,12 +280,12 @@ async def capture():
         return jsonify({
             "success": True,
             "order_id": order.public_id,
-            "payment_id": payment.id,
-            "license_key": license_key,
+            "paypal_order_id": paypal_order_id,
+            "product": product.name,
             "subscription_tier": (
                 product.subscription_tier
             ),
-            "product": product.name,
+            "license_key": license_key,
             "expires_at": (
                 license_record.expires_at.isoformat()
                 if license_record.expires_at
@@ -307,19 +295,26 @@ async def capture():
 
 
 # ============================================================
-# CHECK PAYPAL ORDER
+# GET PAYPAL ORDER
 # ============================================================
 
 @paypal_bp.get("/order/<paypal_order_id>")
 async def get_order(paypal_order_id: str):
+    if not paypal_order_id.strip():
+        return jsonify({
+            "error": "Invalid PayPal order ID"
+        }), 400
+
     try:
-        data = await get_paypal_order(
+        paypal_data = await get_paypal_order(
             paypal_order_id
         )
-    except Exception as exc:
+    except Exception:
         return jsonify({
-            "error": "Unable to retrieve PayPal order",
-            "details": str(exc),
+            "error": "Unable to retrieve PayPal order"
         }), 502
 
-    return jsonify(data), 200
+    return jsonify({
+        "id": paypal_data.get("id"),
+        "status": paypal_data.get("status"),
+    }), 200
