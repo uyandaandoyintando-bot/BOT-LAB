@@ -8,96 +8,75 @@ from backend.config import Config
 
 
 def get_paypal_base_url() -> str:
-    if Config.PAYPAL_MODE == "live":
+    if Config.PAYPAL_ENVIRONMENT == "live":
         return "https://api-m.paypal.com"
 
     return "https://api-m.sandbox.paypal.com"
 
 
 async def get_access_token() -> str:
-    client_id = Config.PAYPAL_CLIENT_ID
-    client_secret = Config.PAYPAL_CLIENT_SECRET
-
-    if not client_id or not client_secret:
+    if not Config.PAYPAL_CLIENT_ID:
         raise RuntimeError(
-            "PayPal credentials are not configured"
+            "PAYPAL_CLIENT_ID is not configured"
+        )
+
+    if not Config.PAYPAL_CLIENT_SECRET:
+        raise RuntimeError(
+            "PAYPAL_CLIENT_SECRET is not configured"
         )
 
     credentials = (
-        f"{client_id}:{client_secret}"
+        f"{Config.PAYPAL_CLIENT_ID}:"
+        f"{Config.PAYPAL_CLIENT_SECRET}"
     )
 
-    encoded = base64.b64encode(
+    encoded_credentials = base64.b64encode(
         credentials.encode("utf-8")
     ).decode("utf-8")
 
+    url = (
+        f"{get_paypal_base_url()}"
+        "/v1/oauth2/token"
+    )
+
     headers = {
-        "Authorization": f"Basic {encoded}",
+        "Authorization": (
+            f"Basic {encoded_credentials}"
+        ),
         "Content-Type": (
             "application/x-www-form-urlencoded"
         ),
-        "Accept": "application/json",
+    }
+
+    data = {
+        "grant_type": "client_credentials",
     }
 
     async with aiohttp.ClientSession() as session:
         async with session.post(
-            f"{get_paypal_base_url()}"
-            "/v1/oauth2/token",
+            url,
             headers=headers,
-            data={
-                "grant_type": "client_credentials"
-            },
+            data=data,
         ) as response:
 
-            data = await response.json()
+            response_data = await response.json()
 
             if response.status != 200:
                 raise RuntimeError(
                     "PayPal authentication failed: "
-                    f"{response.status} {data}"
+                    f"{response_data}"
                 )
 
-            return data["access_token"]
+            token = response_data.get(
+                "access_token"
+            )
 
-
-async def paypal_request(
-    method: str,
-    endpoint: str,
-    *,
-    json_data: dict | None = None,
-) -> dict:
-    token = await get_access_token()
-
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
-
-    async with aiohttp.ClientSession() as session:
-        async with session.request(
-            method,
-            f"{get_paypal_base_url()}{endpoint}",
-            headers=headers,
-            json=json_data,
-        ) as response:
-
-            text = await response.text()
-
-            try:
-                import json
-
-                data = json.loads(text)
-            except Exception:
-                data = {"raw": text}
-
-            if response.status >= 400:
+            if not token:
                 raise RuntimeError(
-                    "PayPal API error "
-                    f"{response.status}: {data}"
+                    "PayPal did not return an access token"
                 )
 
-            return data
+            return token
 
 
 async def create_paypal_order(
@@ -107,56 +86,128 @@ async def create_paypal_order(
     public_order_id: str,
     description: str,
 ) -> dict:
-    """
-    Create a PayPal checkout order.
 
-    The amount comes from the trusted local Product/Order
-    record rather than directly from the client.
-    """
+    if amount_cents <= 0:
+        raise ValueError(
+            "amount_cents must be greater than zero"
+        )
+
+    token = await get_access_token()
 
     amount = f"{amount_cents / 100:.2f}"
+
+    url = (
+        f"{get_paypal_base_url()}"
+        "/v2/checkout/orders"
+    )
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "PayPal-Request-Id": public_order_id,
+    }
 
     payload = {
         "intent": "CAPTURE",
         "purchase_units": [
             {
                 "reference_id": public_order_id,
-                "description": description,
+                "description": description[:127],
                 "amount": {
                     "currency_code": currency,
                     "value": amount,
                 },
             }
         ],
-        "application_context": {
-            "user_action": "PAY_NOW",
-            "shipping_preference": "NO_SHIPPING",
-        },
     }
 
-    return await paypal_request(
-        "POST",
-        "/v2/checkout/orders",
-        json_data=payload,
-    )
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            url,
+            headers=headers,
+            json=payload,
+        ) as response:
+
+            response_data = await response.json()
+
+            if response.status not in {
+                200,
+                201,
+            }:
+                raise RuntimeError(
+                    "PayPal order creation failed: "
+                    f"{response_data}"
+                )
+
+            return response_data
 
 
 async def get_paypal_order(
     paypal_order_id: str,
 ) -> dict:
-    return await paypal_request(
-        "GET",
-        f"/v2/checkout/orders/"
-        f"{paypal_order_id}",
+
+    token = await get_access_token()
+
+    url = (
+        f"{get_paypal_base_url()}"
+        f"/v2/checkout/orders/{paypal_order_id}"
     )
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            url,
+            headers=headers,
+        ) as response:
+
+            response_data = await response.json()
+
+            if response.status != 200:
+                raise RuntimeError(
+                    "Unable to retrieve PayPal order: "
+                    f"{response_data}"
+                )
+
+            return response_data
 
 
 async def capture_paypal_order(
     paypal_order_id: str,
 ) -> dict:
-    return await paypal_request(
-        "POST",
+
+    token = await get_access_token()
+
+    url = (
+        f"{get_paypal_base_url()}"
         f"/v2/checkout/orders/"
-        f"{paypal_order_id}/capture",
-        json_data={},
-              )
+        f"{paypal_order_id}/capture"
+    )
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            url,
+            headers=headers,
+            json={},
+        ) as response:
+
+            response_data = await response.json()
+
+            if response.status not in {
+                200,
+                201,
+            }:
+                raise RuntimeError(
+                    "PayPal capture failed: "
+                    f"{response_data}"
+                )
+
+            return response_data
